@@ -11,9 +11,7 @@ public class Cliente {
   //GUI
   //----
   JFrame f = new JFrame("Cliente de Testes");
-  JButton setupButton = new JButton("Setup");
   JButton playButton = new JButton("Play");
-  JButton pauseButton = new JButton("Pause");
   JButton tearButton = new JButton("Teardown");
   JPanel mainPanel = new JPanel();
   JPanel buttonPanel = new JPanel();
@@ -24,12 +22,17 @@ public class Cliente {
   //RTP variables:
   //----------------
   DatagramPacket rcvdp; //UDP packet received from the server (to receive)
+  DatagramPacket senddp; //UDP packet received from the server (to receive)
   DatagramSocket RTPsocket; //socket to be used to send and receive UDP packet
-  static int RTP_RCV_PORT = 4444; //port where the client will receive the RTP packets
+   static int RTP_RCV_PORT = 3333;//4444; //port where the client will receive the RTP packets
   
   Timer cTimer; //timer used to receive data from the UDP socket
   byte[] cBuf; //buffer used to store data received from the server 
  
+  int bestHops = 999999;
+  InetAddress bestHopsAddress = null;
+  int lastDiscoveryId=-1;
+
   //--------------------------
   //Constructor
   //--------------------------
@@ -47,9 +50,7 @@ public class Cliente {
 
     //Buttons
     buttonPanel.setLayout(new GridLayout(1,0));
-    buttonPanel.add(setupButton);
     buttonPanel.add(playButton);
-    buttonPanel.add(pauseButton);
     buttonPanel.add(tearButton);
 
     // handlers... (so dois)
@@ -80,6 +81,7 @@ public class Cliente {
     try {
       // socket e video
       RTPsocket = new DatagramSocket(RTP_RCV_PORT); //init RTP socket (o mesmo para o cliente e servidor)
+      //sendSocket = new DatagramSocket(RTP_RCV_PORT);
       RTPsocket.setSoTimeout(5000); // setimeout to 5s
     } catch (SocketException e) {
       System.out.println("Cliente: erro no socket: " + e.getMessage());
@@ -116,12 +118,21 @@ public class Cliente {
     public void actionPerformed(ActionEvent e){
 
       System.out.println("Teardown Button pressed !");  
-	  //stop the timer
-	  cTimer.stop();
-	  //exit
-	  System.exit(0);
-	}
+      //stop the timer
+      cTimer.stop();
+      //exit
+      System.exit(0);
     }
+  }
+
+   private void sendControlMessage(String s, InetAddress address) throws IOException{
+    byte[] msg = s.getBytes();
+    byte[] data = new byte[msg.length+1];
+    data[0]=0; //marker for control packet
+    System.arraycopy(s.getBytes(),0,data,1,msg.length);
+    senddp = new DatagramPacket(data, data.length, address, RTP_RCV_PORT);
+    RTPsocket.send(senddp);
+  }
 
   //------------------------------------
   //Handler for timer (para cliente)
@@ -137,27 +148,62 @@ public class Cliente {
         //receive the DP from the socket:
         RTPsocket.receive(rcvdp);
           
-        //create an RTPpacket object from the DP
-        RTPpacket rtp_packet = new RTPpacket(rcvdp.getData(), rcvdp.getLength());
+        byte[] ba = rcvdp.getData() ;
+        if ((ba[0] & 0xC0)/*b11000000*/ == 0){ //version == 0 
+          //msg controlo
+          String s = new String(ba,1,rcvdp.getLength()-1); //"Discovery,id,custo";
 
-        //print important header fields of the RTP packet received: 
-        System.out.println("Got RTP packet with SeqNum # "+rtp_packet.getsequencenumber()+" TimeStamp "+rtp_packet.gettimestamp()+" ms, of type "+rtp_packet.getpayloadtype());
-        
-        //print header bitstream:
-        rtp_packet.printheader();
+          System.out.println("Received: " +s );
 
-        //get the payload bitstream from the RTPpacket object
-        int payload_length = rtp_packet.getpayload_length();
-        byte [] payload = new byte[payload_length];
-        rtp_packet.getpayload(payload);
+          String[] cmd = s.split(",");
 
-        //get an Image object from the payload bitstream
-        Toolkit toolkit = Toolkit.getDefaultToolkit();
-        Image image = toolkit.createImage(payload, 0, payload_length);
-        
-        //display the image as an ImageIcon object
-        icon = new ImageIcon(image);
-        iconLabel.setIcon(icon);
+          if ("Discovery".equals(cmd[0])){
+            int id = Integer.parseInt(cmd[1]);
+            if (id != lastDiscoveryId){
+              lastDiscoveryId = id;
+              bestHops=999999;
+              System.out.println("new discovery");
+            }
+
+            int hops = Integer.parseInt(cmd[2]) + 1;
+            //se 
+            if (hops < bestHops){
+              if (bestHopsAddress!=null){
+                sendControlMessage("RemoveClient", bestHopsAddress);
+                System.out.println(bestHopsAddress + " removed from route");
+              }
+
+              bestHops = hops;
+              bestHopsAddress = rcvdp.getAddress();
+              System.out.println("best route from " + bestHopsAddress + " with cost " + hops);
+
+              sendControlMessage("AddClient", bestHopsAddress);
+              System.out.println("new client - " + rcvdp.getAddress());
+            }
+          }        
+        }else{
+          //create an RTPpacket object from the DP
+          RTPpacket rtp_packet = new RTPpacket(rcvdp.getData(), rcvdp.getLength());
+
+          //print important header fields of the RTP packet received: 
+          System.out.println("Got RTP packet with SeqNum # "+rtp_packet.getsequencenumber()+" TimeStamp "+rtp_packet.gettimestamp()+" ms, of type "+rtp_packet.getpayloadtype());
+          
+          //print header bitstream:
+          rtp_packet.printheader();
+
+          //get the payload bitstream from the RTPpacket object
+          int payload_length = rtp_packet.getpayload_length();
+          byte [] payload = new byte[payload_length];
+          rtp_packet.getpayload(payload);
+
+          //get an Image object from the payload bitstream
+          Toolkit toolkit = Toolkit.getDefaultToolkit();
+          Image image = toolkit.createImage(payload, 0, payload_length);
+          
+          //display the image as an ImageIcon object
+          icon = new ImageIcon(image);
+          iconLabel.setIcon(icon);
+        }
       }
       catch (InterruptedIOException iioe){
 	      System.out.println("Nothing to read");
